@@ -35,7 +35,7 @@ def render_compiler():
 
 
     with st.sidebar:
-        st.title("🔧 App Compiler")
+        st.title("🔧 ZEMO.ai")
         st.caption("Natural language → App schema")
         st.divider()
 
@@ -66,7 +66,7 @@ def render_compiler():
         del st.session_state["load_run_id"]
 
 
-    st.title("🔧 App Compiler")
+    st.title("🔧 ZEMO.ai")
     st.markdown(
         "Describe your app in plain English. The system will generate a "
         "complete **UI → API → Database → Auth** schema using a "

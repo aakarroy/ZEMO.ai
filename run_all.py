@@ -97,7 +97,7 @@ def _shutdown(procs: list[subprocess.Popen]):
 def main():
     _check_scripts()
 
-    print(bold("\n⚡ App Compiler — launching all services\n"))
+    print(bold("\n⚡ ZEMO.ai — launching all services\n"))
 
     procs: list[subprocess.Popen] = []
     for app in APPS:

@@ -1,4 +1,4 @@
-<![CDATA[<div align="center">
+
 
 # ⚡ ZEMO.ai
 
@@ -14,7 +14,6 @@ Built on a state-driven multi-stage pipeline powered by **Google Gemini 2.5 Flas
 [![Pydantic v2](https://img.shields.io/badge/Pydantic-v2-E92063?logo=pydantic&logoColor=white)](#technical-stack)
 [![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
 
-</div>
 
 ---
 
@@ -294,4 +293,3 @@ All configuration is managed through environment variables in `.env`:
 ## License
 
 MIT License. See [LICENSE](LICENSE) for details.
-]]>

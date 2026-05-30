@@ -1,6 +1,6 @@
 import streamlit as st
 
-st.set_page_config(layout="wide", page_title="AI App Compiler")
+st.set_page_config(layout="wide", page_title="ZEMO.ai")
 
 from app import render_compiler
 from build_frontend import render_studio

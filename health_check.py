@@ -2,7 +2,7 @@
 """
 health_check.py
 
-Pre-flight diagnostic for the App Compiler pipeline.
+Pre-flight diagnostic for the ZEMO.ai pipeline.
 Run with:  python health_check.py
 
 Checks (in order):

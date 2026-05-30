@@ -1,7 +1,7 @@
 """
 build_frontend.py
 
-Stage 5 of the App Compiler pipeline: Full-Stack Code Generator.
+Stage 5 of the ZEMO.ai pipeline: Full-Stack Code Generator.
 
 Standalone Streamlit app. Run with: streamlit run build_frontend.py
 
@@ -646,7 +646,7 @@ def render_studio():
 
     st.title("⚡ Full-Stack Studio")
     st.caption(
-        "Stage 5 of the App Compiler Pipeline — "
+        "Stage 5 of the ZEMO.ai Pipeline — "
         "Schema → Production Source Code"
     )
 
