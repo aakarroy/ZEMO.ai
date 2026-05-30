@@ -6,6 +6,8 @@
 
 **Describe your app in plain English. ZEMO.ai architects, compiles, and delivers a production-ready full-stack codebase — in seconds.**
 
+🚀 **Try it live:** [https://zemoai.streamlit.app/](https://zemoai.streamlit.app/)
+
 Built on a state-driven multi-stage pipeline powered by **Google Gemini 2.5 Flash**.
 
 [![Python 3.10+](https://img.shields.io/badge/Python-3.10+-3776AB?logo=python&logoColor=white)](#technical-stack)
