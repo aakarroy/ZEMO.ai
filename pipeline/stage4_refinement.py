@@ -9,8 +9,8 @@ Detects naming inconsistencies across the 4 separately-generated schemas
 TWO-STEP APPROACH:
   Step 1: Python-only analysis — fast, zero cost, zero tokens.
           Looks for common naming patterns that diverge across layers.
-  Step 2: Claude normalisation — ONLY called if Step 1 found issues.
-          Sends only the inconsistencies + schemas to Claude, not the
+  Step 2: Gemini normalisation — ONLY called if Step 1 found issues.
+          Sends only the inconsistencies + schemas to Gemini, not the
           full pipeline context. Targeted and efficient.
 
 This is NOT a full regeneration. It is a surgical consistency fix.
@@ -19,10 +19,12 @@ This is NOT a full regeneration. It is a surgical consistency fix.
 import json
 import re
 import time
-import anthropic
+import random
+from google import genai
+from google.genai import types
 from pipeline import PipelineStage, StageValidationError
 from models.intent_model import IntentModel
-from config import ANTHROPIC_API_KEY, CLAUDE_MODEL, CLAUDE_TEMPERATURE_REPAIR
+from config import GEMINI_API_KEY, GEMINI_MODEL, GEMINI_TEMPERATURE_REPAIR, GEMINI_MAX_OUTPUT_TOKENS
 
 
 # Known naming variant groups — fields that often get named differently
@@ -75,7 +77,7 @@ class RefinementLayer(PipelineStage):
     Stage 4: Cross-layer schema refinement.
 
     Detects naming inconsistencies via Python analysis,
-    then calls Claude ONLY if issues are found.
+    then calls Gemini ONLY if issues are found.
     """
 
     stage_name = "refinement"
@@ -92,7 +94,7 @@ class RefinementLayer(PipelineStage):
         """Extract all column names from DB tables."""
         columns = set()
         for table in schemas.get("db_schema", []):
-            for col in table.columns:
+            for col in (table.columns or []):
                 columns.add(col.name)
         return columns
 
@@ -100,7 +102,7 @@ class RefinementLayer(PipelineStage):
         """Extract field names referenced in UI component props."""
         fields = set()
         for page in schemas.get("ui_schema", []):
-            for comp in page.components:
+            for comp in (page.components or []):
                 if comp.props:
                     # Look for 'columns', 'fields' keys in props
                     for prop_key in ("columns", "fields"):
@@ -114,7 +116,7 @@ class RefinementLayer(PipelineStage):
         """
         Pure Python consistency check.
         Returns a list of human-readable inconsistency descriptions.
-        Zero Claude calls. Zero cost.
+        Zero Gemini calls. Zero cost.
         """
         inconsistencies = []
 
@@ -192,7 +194,7 @@ class RefinementLayer(PipelineStage):
 
         Note:
             If no inconsistencies are found, returns original schemas unchanged
-            with tokens=0, latency=0.0 (no Claude call made).
+            with tokens=0, latency=0.0 (no Gemini call made).
         """
         print(f"\n[Stage 4] Running consistency analysis for '{intent.app_name}'...")
 
@@ -204,12 +206,12 @@ class RefinementLayer(PipelineStage):
 
         print(
             f"[Stage 4] Found {len(inconsistencies)} inconsistency(ies). "
-            "Calling Claude for normalisation..."
+            "Calling Gemini for normalisation..."
         )
         for issue in inconsistencies:
             print(f"  → {issue}")
 
-        # Build schemas as plain JSON for Claude
+        # Build schemas as plain JSON for Gemini
         schemas_json = self._schemas_to_json(schemas)
         schemas_str = json.dumps(schemas_json, indent=2)
 
@@ -220,24 +222,40 @@ class RefinementLayer(PipelineStage):
             "Return the corrected JSON object with all 5 schema keys."
         )
 
-        # Use CLAUDE_TEMPERATURE_REPAIR (0.1) for deterministic fixes
+        # Use GEMINI_TEMPERATURE_REPAIR (0.1) for deterministic fixes
         t_start = time.perf_counter()
-        client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
-        message = client.messages.create(
-            model=CLAUDE_MODEL,
-            max_tokens=4000,
-            temperature=CLAUDE_TEMPERATURE_REPAIR,
-            system=REFINEMENT_SYSTEM_PROMPT,
-            messages=[{"role": "user", "content": user_content}],
-        )
+        client = genai.Client(api_key=GEMINI_API_KEY)
+
+        max_attempts = 5
+        for attempt in range(max_attempts):
+            try:
+                response = client.models.generate_content(
+                    model=GEMINI_MODEL,
+                    contents=user_content,
+                    config=types.GenerateContentConfig(
+                        system_instruction=REFINEMENT_SYSTEM_PROMPT,
+                        temperature=GEMINI_TEMPERATURE_REPAIR,
+                        max_output_tokens=GEMINI_MAX_OUTPUT_TOKENS,
+                    )
+                )
+                break
+            except Exception as e:
+                err_str = str(e).upper()
+                if ("503" in err_str or "UNAVAILABLE" in err_str) and attempt < max_attempts - 1:
+                    sleep_time = (2 ** attempt) + random.uniform(0, 1)
+                    print(f"  [{self.stage_name}] [Warning] Gemini is busy. Retrying in {sleep_time:.2f} seconds...")
+                    time.sleep(sleep_time)
+                else:
+                    raise
+
         latency_ms = (time.perf_counter() - t_start) * 1000
-        tokens_used = message.usage.input_tokens + message.usage.output_tokens
-        raw_text = message.content[0].text.strip()
+        tokens_used = response.usage_metadata.prompt_token_count + response.usage_metadata.candidates_token_count
+        raw_text = response.text.strip()
 
         parsed = self._extract_json_object(raw_text)
         if parsed is None:
             print(
-                "[Stage 4] ⚠️ Claude refinement returned non-JSON. "
+                "[Stage 4] ⚠️ Gemini refinement returned non-JSON. "
                 "Using original schemas unchanged."
             )
             return schemas, tokens_used, latency_ms

@@ -92,14 +92,14 @@ class SystemDesigner(PipelineStage):
             tuple of (DesignModel, tokens_used, latency_ms)
 
         Raises:
-            StageValidationError: If Claude's response cannot be validated.
+            StageValidationError: If Gemini's response cannot be validated.
         """
         print(
             f"\n[Stage 2] Designing architecture for '{intent.app_name}' "
             f"({len(intent.core_entities)} entities)..."
         )
 
-        # Serialize IntentModel to pretty JSON for Claude's context
+        # Serialize IntentModel to pretty JSON for Gemini's context
         user_content = (
             "Design the system architecture for this app specification.\n\n"
             f"APP SPECIFICATION:\n{intent.model_dump_json(indent=2)}\n\n"
@@ -107,7 +107,7 @@ class SystemDesigner(PipelineStage):
             "Output ONLY the JSON object."
         )
 
-        result, tokens, latency = self.call_claude(
+        result, tokens, latency = self.call_gemini(
             system_prompt=DESIGN_SYSTEM_PROMPT,
             user_content=user_content,
             response_model=DesignModel,

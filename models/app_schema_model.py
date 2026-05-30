@@ -1,8 +1,27 @@
 """app_schema_model — Pydantic models for final AppSchema and pipeline metadata."""
 from __future__ import annotations
 from typing import Any
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 from datetime import datetime
+
+
+# ═══════════════════════════════════════════════════════════════════
+# NULL COERCION HELPER
+# ═══════════════════════════════════════════════════════════════════
+
+def _coerce_nulls(data: dict[str, Any], list_fields: set[str], dict_fields: set[str]) -> dict[str, Any]:
+    """Convert explicit null/None values to [] or {} before Pydantic validates types.
+
+    LLMs frequently output "field": null even when the schema demands a list or dict.
+    Without this coercion, Pydantic raises dict_type / list_type errors.
+    """
+    for key in list_fields:
+        if key in data and data[key] is None:
+            data[key] = []
+    for key in dict_fields:
+        if key in data and data[key] is None:
+            data[key] = {}
+    return data
 
 
 # ═══════════════════════════════════════════════════════════════════
@@ -11,6 +30,13 @@ from datetime import datetime
 
 class UIComponent(BaseModel):
     """A single UI component on a page (widget, table, form, chart, etc.)."""
+
+    @model_validator(mode='before')
+    @classmethod
+    def coerce_nulls(cls, data: Any) -> Any:
+        if isinstance(data, dict):
+            return _coerce_nulls(data, set(), {'props'})
+        return data
 
     id: str = Field(
         ...,
@@ -72,6 +98,13 @@ class UIComponent(BaseModel):
 class UIPage(BaseModel):
     """A complete page/screen in the application."""
 
+    @model_validator(mode='before')
+    @classmethod
+    def coerce_nulls(cls, data: Any) -> Any:
+        if isinstance(data, dict):
+            return _coerce_nulls(data, {'components', 'access_roles'}, set())
+        return data
+
     id: str = Field(
         ...,
         description=(
@@ -107,7 +140,7 @@ class UIPage(BaseModel):
     )
 
     components: list[UIComponent] = Field(
-        ...,
+        default_factory=list,
         description=(
             "All UI components on this page, in render order (top to bottom). "
             "Every page must have at least one component. "
@@ -117,7 +150,7 @@ class UIPage(BaseModel):
     )
 
     access_roles: list[str] = Field(
-        ...,
+        default_factory=list,
         description=(
             "Role names that can access this page. "
             "Must match role names in AuthRole.name. "
@@ -133,6 +166,13 @@ class UIPage(BaseModel):
 
 class APIEndpoint(BaseModel):
     """A single REST API endpoint."""
+
+    @model_validator(mode='before')
+    @classmethod
+    def coerce_nulls(cls, data: Any) -> Any:
+        if isinstance(data, dict):
+            return _coerce_nulls(data, {'allowed_roles', 'validation_rules'}, set())
+        return data
 
     id: str = Field(
         ...,
@@ -174,7 +214,7 @@ class APIEndpoint(BaseModel):
     )
 
     allowed_roles: list[str] = Field(
-        ...,
+        default_factory=list,
         description=(
             "Which roles can call this endpoint. "
             "Must match role names defined in AuthRole.name. "
@@ -195,7 +235,7 @@ class APIEndpoint(BaseModel):
         )
     )
 
-    response_schema: dict[str, Any] = Field(
+    response_schema: dict[str, Any] | str = Field(
         ...,
         description=(
             "What this endpoint returns. "
@@ -280,6 +320,13 @@ class DBColumn(BaseModel):
 class DBTable(BaseModel):
     """A single database table."""
 
+    @model_validator(mode='before')
+    @classmethod
+    def coerce_nulls(cls, data: Any) -> Any:
+        if isinstance(data, dict):
+            return _coerce_nulls(data, {'columns', 'indexes'}, set())
+        return data
+
     name: str = Field(
         ...,
         description=(
@@ -290,7 +337,7 @@ class DBTable(BaseModel):
     )
 
     columns: list[DBColumn] = Field(
-        ...,
+        default_factory=list,
         description=(
             "All columns in this table. MANDATORY first column: "
             "{'name': 'id', 'type': 'UUID', 'nullable': false, "
@@ -319,6 +366,13 @@ class DBTable(BaseModel):
 class AuthRole(BaseModel):
     """A single role in the role-based access control system."""
 
+    @model_validator(mode='before')
+    @classmethod
+    def coerce_nulls(cls, data: Any) -> Any:
+        if isinstance(data, dict):
+            return _coerce_nulls(data, {'permissions'}, set())
+        return data
+
     name: str = Field(
         ...,
         description=(
@@ -330,7 +384,7 @@ class AuthRole(BaseModel):
     )
 
     permissions: list[str] = Field(
-        ...,
+        default_factory=list,
         description=(
             "List of permission strings this role has. "
             "Format: 'resource:action'. "
@@ -360,6 +414,13 @@ class AuthRole(BaseModel):
 
 class BusinessRule(BaseModel):
     """A single business logic rule that governs app behaviour."""
+
+    @model_validator(mode='before')
+    @classmethod
+    def coerce_nulls(cls, data: Any) -> Any:
+        if isinstance(data, dict):
+            return _coerce_nulls(data, {'affected_components'}, set())
+        return data
 
     id: str = Field(
         ...,
@@ -417,6 +478,18 @@ class AppSchema(BaseModel):
     Contains all sub-schemas plus metadata.
     """
 
+    @model_validator(mode='before')
+    @classmethod
+    def coerce_nulls(cls, data: Any) -> Any:
+        if isinstance(data, dict):
+            return _coerce_nulls(
+                data,
+                {'ui_schema', 'api_schema', 'db_schema', 'auth_schema',
+                 'business_rules', 'assumptions', 'warnings'},
+                set(),
+            )
+        return data
+
     meta: dict[str, Any] = Field(
         ...,
         description=(
@@ -429,12 +502,12 @@ class AppSchema(BaseModel):
     )
 
     ui_schema: list[UIPage] = Field(
-        ...,
+        default_factory=list,
         description="All pages in the application. Minimum 3 pages for any real app."
     )
 
     api_schema: list[APIEndpoint] = Field(
-        ...,
+        default_factory=list,
         description=(
             "All REST API endpoints. "
             "Minimum: CRUD for each core entity + auth endpoints."
@@ -442,7 +515,7 @@ class AppSchema(BaseModel):
     )
 
     db_schema: list[DBTable] = Field(
-        ...,
+        default_factory=list,
         description=(
             "All database tables. "
             "Minimum: one table per core entity + users table always present."
@@ -450,7 +523,7 @@ class AppSchema(BaseModel):
     )
 
     auth_schema: list[AuthRole] = Field(
-        ...,
+        default_factory=list,
         description=(
             "All RBAC roles. "
             "Minimum 2 roles: admin and at least one non-admin role."

@@ -35,12 +35,12 @@ from models.intent_model import IntentModel
 from config import MAX_REPAIR_ATTEMPTS
 
 
-# Claude Sonnet blended pricing estimate ($/million tokens)
+# Gemini 2.5 Flash blended pricing estimate ($/million tokens)
 _COST_PER_MILLION_TOKENS = 5.0
 
 
 def calculate_cost(total_tokens: int) -> float:
-    """Estimate API cost in USD using blended Claude Sonnet pricing."""
+    """Estimate API cost in USD using blended Gemini 2.5 Flash pricing."""
     return round((total_tokens / 1_000_000) * _COST_PER_MILLION_TOKENS, 6)
 
 
@@ -48,7 +48,7 @@ def _safe_list(schemas: dict, key: str, model_class) -> list:
     """
     Extract a list from schemas dict, handling two cases:
       Case A: Value is already list[PydanticModel] (from Stage 3 direct)
-      Case B: Value is list[dict] (from Stage 4 Claude normalisation)
+      Case B: Value is list[dict] (from Stage 4 Gemini normalisation)
 
     Args:
         schemas    : The schemas dict from generate_all() or refine()

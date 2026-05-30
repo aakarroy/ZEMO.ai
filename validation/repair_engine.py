@@ -9,7 +9,7 @@ FUNDAMENTAL DESIGN PRINCIPLE:
   If UI/API consistency check fails → regenerate ONLY ui_schema
   If API/DB consistency check fails → regenerate ONLY api_schema
   If Auth consistency fails (undefined role) → add the role to auth_schema
-    (this is often a pure-Python fix, no Claude needed)
+    (this is often a pure-Python fix, no Gemini needed)
 
   This is significantly cheaper and faster than full retry.
   It also preserves the good work done by other layers.
@@ -24,7 +24,9 @@ REPAIR CYCLE LIMIT:
 import json
 import re
 import time
-import anthropic
+import random
+from google import genai
+from google.genai import types
 from pydantic import ValidationError
 
 from models.app_schema_model import (
@@ -33,7 +35,9 @@ from models.app_schema_model import (
 from models.intent_model import IntentModel
 from validation.consistency_checker import ValidationReport, ConsistencyError
 from config import (
-    ANTHROPIC_API_KEY, CLAUDE_MODEL, CLAUDE_TEMPERATURE_REPAIR, MAX_REPAIR_ATTEMPTS
+    GEMINI_API_KEY,
+    GEMINI_MODEL, GEMINI_TEMPERATURE_REPAIR, GEMINI_MAX_OUTPUT_TOKENS,
+    MAX_REPAIR_ATTEMPTS
 )
 
 
@@ -66,7 +70,7 @@ class RepairEngine:
     """
 
     def __init__(self):
-        self.client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
+        self.client = genai.Client(api_key=GEMINI_API_KEY)
 
     # ─────────────────────────────────────────────────────────────────
     # PUBLIC API
@@ -85,7 +89,7 @@ class RepairEngine:
         Args:
             app_schema         : The AppSchema with consistency errors.
             validation_report  : The ValidationReport from ConsistencyChecker.
-            original_intent    : IntentModel (provides context for Claude).
+            original_intent    : IntentModel (provides context for Gemini).
             attempt            : Current repair attempt number (1-based).
 
         Returns:
@@ -188,7 +192,7 @@ class RepairEngine:
             f"App context: {intent.app_name} ({intent.app_type})"
         )
 
-        raw, tokens, _ = self._call_claude_raw(system_prompt, user_content)
+        raw, tokens, _ = self._call_gemini_raw(system_prompt, user_content)
         parsed = self._extract_list(raw)
 
         if parsed is not None:
@@ -239,7 +243,7 @@ class RepairEngine:
             f"Current UI schema to fix:\n{current_ui_json}"
         )
 
-        raw, tokens, _ = self._call_claude_raw(system_prompt, user_content)
+        raw, tokens, _ = self._call_gemini_raw(system_prompt, user_content)
         parsed = self._extract_list(raw)
 
         if parsed is not None:
@@ -297,7 +301,7 @@ class RepairEngine:
             print(f"  [Repair] ✅ Auth repaired via Python (0 tokens)")
             return app_schema, 0
 
-        # Strategy B: Claude call for remaining errors
+        # Strategy B: Gemini call for remaining errors
         error_text = self._format_errors(errors)
         current_auth_json = json.dumps(
             [r.model_dump() for r in app_schema.auth_schema], indent=2
@@ -319,13 +323,13 @@ class RepairEngine:
             f"Current auth schema:\n{current_auth_json}"
         )
 
-        raw, tokens, _ = self._call_claude_raw(system_prompt, user_content)
+        raw, tokens, _ = self._call_gemini_raw(system_prompt, user_content)
         parsed = self._extract_list(raw)
 
         if parsed is not None:
             try:
                 app_schema.auth_schema = [AuthRole(**r) for r in parsed]
-                print(f"  [Repair] ✅ Auth schema repaired via Claude ({tokens} tokens)")
+                print(f"  [Repair] ✅ Auth schema repaired via Gemini ({tokens} tokens)")
             except (ValidationError, TypeError) as e:
                 print(f"  [Repair] ⚠️ Auth repair validation failed: {e}. Keeping original.")
         else:
@@ -337,24 +341,40 @@ class RepairEngine:
     # PRIVATE HELPERS
     # ─────────────────────────────────────────────────────────────────
 
-    def _call_claude_raw(
+    def _call_gemini_raw(
         self, system_prompt: str, user_content: str
     ) -> tuple[str, int, float]:
         """
-        Make a Claude API call and return raw text + usage stats.
-        Uses CLAUDE_TEMPERATURE_REPAIR (0.1) for deterministic fixes.
+        Make a Gemini API call and return raw text + usage stats.
+        Uses GEMINI_TEMPERATURE_REPAIR (0.1) for deterministic fixes.
         """
         t_start = time.perf_counter()
-        message = self.client.messages.create(
-            model=CLAUDE_MODEL,
-            max_tokens=3000,
-            temperature=CLAUDE_TEMPERATURE_REPAIR,
-            system=system_prompt,
-            messages=[{"role": "user", "content": user_content}],
-        )
+
+        max_attempts = 5
+        for attempt in range(max_attempts):
+            try:
+                response = self.client.models.generate_content(
+                    model=GEMINI_MODEL,
+                    contents=user_content,
+                    config=types.GenerateContentConfig(
+                        system_instruction=system_prompt,
+                        temperature=GEMINI_TEMPERATURE_REPAIR,
+                        max_output_tokens=GEMINI_MAX_OUTPUT_TOKENS,
+                    )
+                )
+                break
+            except Exception as e:
+                err_str = str(e).upper()
+                if ("503" in err_str or "UNAVAILABLE" in err_str) and attempt < max_attempts - 1:
+                    sleep_time = (2 ** attempt) + random.uniform(0, 1)
+                    print(f"  [Repair] [Warning] Gemini is busy. Retrying in {sleep_time:.2f} seconds...")
+                    time.sleep(sleep_time)
+                else:
+                    raise
+
         latency_ms = (time.perf_counter() - t_start) * 1000
-        tokens = message.usage.input_tokens + message.usage.output_tokens
-        raw = message.content[0].text.strip()
+        tokens = response.usage_metadata.prompt_token_count + response.usage_metadata.candidates_token_count
+        raw = response.text.strip()
         return raw, tokens, latency_ms
 
     def _extract_list(self, text: str) -> list | None:

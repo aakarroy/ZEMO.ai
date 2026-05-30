@@ -4,10 +4,10 @@ pipeline/__init__.py
 Base infrastructure for the multi-stage LLM pipeline.
 
 Provides:
-  - StageValidationError: raised when Claude returns data that cannot
+  - StageValidationError: raised when Gemini returns data that cannot
     be validated against a Pydantic model.
   - PipelineStage: base class inherited by all 4 pipeline stage classes.
-    Provides call_claude() and call_claude_list() methods.
+    Provides call_gemini() and call_gemini_list() methods.
 
 All methods are synchronous. No async/await anywhere in this codebase.
 """
@@ -15,18 +15,20 @@ All methods are synchronous. No async/await anywhere in this codebase.
 import json
 import re
 import time
+import random
 from typing import Any, TypeVar
-import anthropic
+from google import genai
+from google.genai import types
 from pydantic import BaseModel, ValidationError
 
 from config import (
-    ANTHROPIC_API_KEY,
-    CLAUDE_MODEL,
-    CLAUDE_TEMPERATURE,
-    CLAUDE_MAX_TOKENS,
+    GEMINI_API_KEY,
+    GEMINI_MODEL,
+    GEMINI_TEMPERATURE,
+    GEMINI_MAX_OUTPUT_TOKENS,
 )
 
-# TypeVar for generic return type in call_claude methods
+# TypeVar for generic return type in call_gemini methods
 T = TypeVar("T", bound=BaseModel)
 
 
@@ -36,12 +38,12 @@ T = TypeVar("T", bound=BaseModel)
 
 class StageValidationError(Exception):
     """
-    Raised when a pipeline stage's Claude response cannot be
+    Raised when a pipeline stage's Gemini response cannot be
     parsed as JSON or validated against its Pydantic model.
 
     Attributes:
         stage_name      : Which stage failed (e.g. "intent_extraction")
-        raw_response    : The exact text Claude returned (for debugging)
+        raw_response    : The exact text Gemini returned (for debugging)
         validation_errors: Pydantic error JSON string or parse error message
         attempted_model : The class name of the Pydantic model we tried
     """
@@ -80,7 +82,7 @@ class PipelineStage:
             stage_name = "intent_extraction"
 
             def extract(self, prompt: str) -> tuple[IntentModel, int, float]:
-                return self.call_claude(
+                return self.call_gemini(
                     system_prompt=INTENT_SYSTEM_PROMPT,
                     user_content=prompt,
                     response_model=IntentModel
@@ -90,44 +92,44 @@ class PipelineStage:
     stage_name: str = "base_stage"
 
     def __init__(self):
-        """Initialise Anthropic client once per stage instance."""
-        self.client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
+        """Initialise Gemini API client once per stage instance."""
+        self.client = genai.Client(api_key=GEMINI_API_KEY)
 
     # ───────────────────────────────────────────────────────────────
     # PUBLIC API
     # ───────────────────────────────────────────────────────────────
 
-    def call_claude(
+    def call_gemini(
         self,
         system_prompt: str,
         user_content: str,
         response_model: type[T],
         temperature: float | None = None,
-        max_tokens: int | None = None,
+        max_output_tokens: int | None = None,
     ) -> tuple[T, int, float]:
         """
-        Make a single Claude API call and validate the response against
+        Make a single Gemini API call and validate the response against
         a Pydantic BaseModel.
 
         Args:
             system_prompt  : The system instruction (role + JSON schema).
             user_content   : The user message (data to process).
             response_model : A Pydantic BaseModel subclass (e.g. IntentModel).
-            temperature    : Override config default (default: CLAUDE_TEMPERATURE=0.2).
-            max_tokens     : Override config default (default: CLAUDE_MAX_TOKENS=4000).
+            temperature    : Override config default (default: GEMINI_TEMPERATURE=0.2).
+            max_output_tokens : Override config default (default: GEMINI_MAX_OUTPUT_TOKENS=65536).
 
         Returns:
             tuple of (validated_model_instance, tokens_used, latency_ms)
 
         Raises:
             StageValidationError: If JSON cannot be extracted or Pydantic validation fails.
-            anthropic.APIError:   If the Anthropic API call itself fails (network, auth, etc.)
+            google.genai.APIError: If the Gemini API call itself fails (network, auth, etc.)
         """
-        _temperature = temperature if temperature is not None else CLAUDE_TEMPERATURE
-        _max_tokens = max_tokens if max_tokens is not None else CLAUDE_MAX_TOKENS
+        _temperature = temperature if temperature is not None else GEMINI_TEMPERATURE
+        _max_output_tokens = max_output_tokens if max_output_tokens is not None else GEMINI_MAX_OUTPUT_TOKENS
 
         # Append the critical JSON-only instruction to EVERY system prompt.
-        # This is non-negotiable — Claude must never return markdown here.
+        # This is non-negotiable — Gemini must never return markdown here.
         enforced_system = (
             system_prompt.rstrip()
             + "\n\n"
@@ -146,23 +148,60 @@ class PipelineStage:
 
         t_start = time.perf_counter()
 
-        message = self.client.messages.create(
-            model=CLAUDE_MODEL,
-            max_tokens=_max_tokens,
-            temperature=_temperature,
-            system=enforced_system,
-            messages=[{"role": "user", "content": user_content}],
-        )
+        max_attempts = 5
+        for attempt in range(max_attempts):
+            try:
+                response = self.client.models.generate_content(
+                    model=GEMINI_MODEL,
+                    contents=user_content,
+                    config=types.GenerateContentConfig(
+                        system_instruction=enforced_system,
+                        temperature=_temperature,
+                        max_output_tokens=_max_output_tokens,
+                    )
+                )
+                break
+            except Exception as e:
+                err_str = str(e).upper()
+                if ("503" in err_str or "UNAVAILABLE" in err_str) and attempt < max_attempts - 1:
+                    sleep_time = (2 ** attempt) + random.uniform(0, 1)
+                    print(f"  [{self.stage_name}] [Warning] Gemini is busy. Retrying in {sleep_time:.2f} seconds...")
+                    time.sleep(sleep_time)
+                else:
+                    raise
 
         latency_ms = (time.perf_counter() - t_start) * 1000
-        tokens_used = message.usage.input_tokens + message.usage.output_tokens
-        raw_text = message.content[0].text.strip()
 
+        # Guard: empty or blocked response
+        if not response.candidates:
+            raise StageValidationError(
+                stage_name=self.stage_name,
+                raw_response="<no candidates>",
+                validation_errors="Gemini returned no candidates (possibly blocked by safety filter).",
+                attempted_model=response_model.__name__,
+            )
+
+        tokens_used = response.usage_metadata.prompt_token_count + response.usage_metadata.candidates_token_count
+        raw_text = (response.text or "").strip()
+
+        # Detect truncation — finish_reason will be MAX_TOKENS if output was cut short
+        finish_reason = getattr(response.candidates[0], 'finish_reason', None)
         print(
-            f"  [{self.stage_name}] Claude responded: "
+            f"  [{self.stage_name}] LLM responded: "
             f"{tokens_used} tokens, {latency_ms:.0f}ms, "
-            f"{len(raw_text)} chars"
+            f"{len(raw_text)} chars, finish={finish_reason}"
         )
+        if finish_reason and str(finish_reason).upper() in ("MAX_TOKENS", "FINISH_REASON_MAX_TOKENS", "2"):
+            raise StageValidationError(
+                stage_name=self.stage_name,
+                raw_response=raw_text,
+                validation_errors=(
+                    f"LLM output was TRUNCATED (finish_reason={finish_reason}). "
+                    f"The {_max_output_tokens} max_output_tokens limit was hit. "
+                    f"Increase GEMINI_MAX_OUTPUT_TOKENS in config."
+                ),
+                attempted_model=response_model.__name__,
+            )
 
         # Extract JSON dict from raw text
         parsed = self._extract_json_object(raw_text)
@@ -171,7 +210,7 @@ class PipelineStage:
                 stage_name=self.stage_name,
                 raw_response=raw_text,
                 validation_errors="All 4 JSON extraction strategies failed. "
-                                  "Claude returned non-JSON content.",
+                                  "LLM returned non-JSON content.",
                 attempted_model=response_model.__name__,
             )
 
@@ -188,16 +227,16 @@ class PipelineStage:
 
         return validated, tokens_used, latency_ms
 
-    def call_claude_list(
+    def call_gemini_list(
         self,
         system_prompt: str,
         user_content: str,
         item_model: type[T],
         temperature: float | None = None,
-        max_tokens: int | None = None,
+        max_output_tokens: int | None = None,
     ) -> tuple[list[T], int, float]:
         """
-        Make a single Claude API call and validate the response as a
+        Make a single Gemini API call and validate the response as a
         JSON array where each element validates against item_model.
 
         Args:
@@ -205,7 +244,7 @@ class PipelineStage:
             user_content  : The user message.
             item_model    : A Pydantic BaseModel subclass for each list item.
             temperature   : Override default.
-            max_tokens    : Override default.
+            max_output_tokens : Override default.
 
         Returns:
             tuple of (list_of_validated_items, tokens_used, latency_ms)
@@ -213,8 +252,8 @@ class PipelineStage:
         Raises:
             StageValidationError: If JSON array cannot be extracted or items fail validation.
         """
-        _temperature = temperature if temperature is not None else CLAUDE_TEMPERATURE
-        _max_tokens = max_tokens if max_tokens is not None else CLAUDE_MAX_TOKENS
+        _temperature = temperature if temperature is not None else GEMINI_TEMPERATURE
+        _max_output_tokens = max_output_tokens if max_output_tokens is not None else GEMINI_MAX_OUTPUT_TOKENS
 
         enforced_system = (
             system_prompt.rstrip()
@@ -235,23 +274,60 @@ class PipelineStage:
 
         t_start = time.perf_counter()
 
-        message = self.client.messages.create(
-            model=CLAUDE_MODEL,
-            max_tokens=_max_tokens,
-            temperature=_temperature,
-            system=enforced_system,
-            messages=[{"role": "user", "content": user_content}],
-        )
+        max_attempts = 5
+        for attempt in range(max_attempts):
+            try:
+                response = self.client.models.generate_content(
+                    model=GEMINI_MODEL,
+                    contents=user_content,
+                    config=types.GenerateContentConfig(
+                        system_instruction=enforced_system,
+                        temperature=_temperature,
+                        max_output_tokens=_max_output_tokens,
+                    )
+                )
+                break
+            except Exception as e:
+                err_str = str(e).upper()
+                if ("503" in err_str or "UNAVAILABLE" in err_str) and attempt < max_attempts - 1:
+                    sleep_time = (2 ** attempt) + random.uniform(0, 1)
+                    print(f"  [{self.stage_name}] [Warning] Gemini is busy. Retrying in {sleep_time:.2f} seconds...")
+                    time.sleep(sleep_time)
+                else:
+                    raise
 
         latency_ms = (time.perf_counter() - t_start) * 1000
-        tokens_used = message.usage.input_tokens + message.usage.output_tokens
-        raw_text = message.content[0].text.strip()
 
+        # Guard: empty or blocked response
+        if not response.candidates:
+            raise StageValidationError(
+                stage_name=self.stage_name,
+                raw_response="<no candidates>",
+                validation_errors="Gemini returned no candidates (possibly blocked by safety filter).",
+                attempted_model=f"list[{item_model.__name__}]",
+            )
+
+        tokens_used = response.usage_metadata.prompt_token_count + response.usage_metadata.candidates_token_count
+        raw_text = (response.text or "").strip()
+
+        # Detect truncation — finish_reason will be MAX_TOKENS if output was cut short
+        finish_reason = getattr(response.candidates[0], 'finish_reason', None)
         print(
-            f"  [{self.stage_name}] Claude responded: "
+            f"  [{self.stage_name}] LLM responded: "
             f"{tokens_used} tokens, {latency_ms:.0f}ms, "
-            f"{len(raw_text)} chars"
+            f"{len(raw_text)} chars, finish={finish_reason}"
         )
+        if finish_reason and str(finish_reason).upper() in ("MAX_TOKENS", "FINISH_REASON_MAX_TOKENS", "2"):
+            raise StageValidationError(
+                stage_name=self.stage_name,
+                raw_response=raw_text,
+                validation_errors=(
+                    f"LLM output was TRUNCATED (finish_reason={finish_reason}). "
+                    f"The {_max_output_tokens} max_output_tokens limit was hit. "
+                    f"Increase GEMINI_MAX_OUTPUT_TOKENS in config."
+                ),
+                attempted_model=f"list[{item_model.__name__}]",
+            )
 
         # Extract JSON array from raw text
         parsed = self._extract_json_array(raw_text)
@@ -266,6 +342,12 @@ class PipelineStage:
         # Validate each item
         validated_items: list[T] = []
         for i, item in enumerate(parsed):
+            if not isinstance(item, dict):
+                print(
+                    f"  [{self.stage_name}] ⚠️ Array item [{i}] is {type(item).__name__}, "
+                    f"not dict. Skipping."
+                )
+                continue
             try:
                 validated_items.append(item_model(**item))
             except ValidationError as e:
@@ -286,10 +368,10 @@ class PipelineStage:
         """
         4-strategy JSON object extraction from raw LLM text.
 
-        Strategy 1: Direct json.loads() — fastest, works if Claude behaved
+        Strategy 1: Direct json.loads() — fastest, works if Gemini behaved
         Strategy 2: Strip markdown code fences and retry
         Strategy 3: Find first { and last } and extract substring
-        Strategy 4: Unwrap known wrapper keys Claude sometimes adds
+        Strategy 4: Unwrap known wrapper keys Gemini sometimes adds
                     (e.g. {"result": {...}, "schema": {...}})
         """
         # Strategy 1: Direct parse

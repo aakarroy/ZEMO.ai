@@ -1,9 +1,14 @@
 # Environment & secrets
 .env
-.streamlit/secrets.toml
 
-# SQLite database (auto-created on first run)
+# SQLite databases
 compiler.db
+*.db
+*.sqlite
+
+# Streamlit specific
+.streamlit/
+secrets.toml
 
 # Python cache
 __pycache__/
@@ -19,6 +24,14 @@ venv/
 .venv/
 env/
 ENV/
+ZEMO/
+
+# Testing cache
+.pytest_cache/
+
+# Generated Zips
+*.zip
+fullstack_app.zip
 
 # Evaluation output files (large, auto-generated)
 evaluation/results/

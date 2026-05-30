@@ -3,7 +3,7 @@ stage3_schema.py
 
 Stage 3 of the pipeline: Schema Generation.
 
-Makes FIVE separate Claude calls, one per schema type:
+Makes FIVE separate Gemini calls, one per schema type:
   1. UI Schema   → list[UIPage]
   2. API Schema  → list[APIEndpoint]
   3. DB Schema   → list[DBTable]
@@ -16,7 +16,7 @@ WHY FIVE CALLS instead of one:
   worse output, harder-to-repair errors, and exceeds token limits
   for complex apps. Separate calls = targeted prompts = better output.
 
-All calls run SEQUENTIALLY (not parallel) to avoid Anthropic rate limits
+All calls run SEQUENTIALLY (not parallel) to avoid Gemini rate limits
 and to keep the code simple and debuggable in Streamlit.
 """
 
@@ -46,8 +46,18 @@ Calendar, KanbanBoard, NotificationBanner, Pagination, Tabs, Breadcrumb
 COMPONENT RULES:
 - data_source format: "api:/path" (must match a real API path you expect to exist)
 - action format: "modal:modal_id" | "navigate:/route" | "api_call:METHOD:/path" | "download:format"
-- props: always provide relevant configuration
+- props: always provide relevant configuration. Keep component props concise to avoid exceeding output token limits.
 - Every page needs at least 1 component. Login pages need 1 Form. Dashboards need 3+.
+CRITICAL RULES FOR JSON:
+- NEVER output null for arrays/lists. If a field like access_roles or components is empty, output an empty array [].
+- NEVER output null for objects/dicts. If a field like props is empty, output an empty object {}.
+- For nullable string fields (data_source, action), use JSON null, NOT the string "null".
+
+BRANDING REQUIREMENT:
+The app_name provided in the schema is the official brand name (e.g., "CartNova", "NexusCRM").
+Use it consistently in page titles, headers, and any title-like fields throughout the UI schema.
+Do NOT use generic names like "Dashboard" in isolation — prefer branded variants where it fits
+(e.g., "CartNova Dashboard", "NexusCRM Contacts"). The login page title should include the brand name.
 
 LAYOUT OPTIONS: "sidebar_main" | "full_width" | "centered" | "split"
   - Use "centered" for login and register pages
@@ -75,8 +85,8 @@ OUTPUT: A JSON array of UIPage objects. No explanation text.
         "id": "component_snake_case_id",
         "type": "ComponentType",
         "props": {"key": "value"},
-        "data_source": "api:/endpoint or null",
-        "action": "action_string or null"
+        "data_source": "api:/endpoint",
+        "action": null
       }
     ],
     "access_roles": ["role_name"]
@@ -115,6 +125,14 @@ REQUEST BODY format: {"field_name": "type:required|optional"}
 
 VALIDATION RULES: At minimum add email format rules, required field rules.
   Add role-specific rules (e.g. "Users can only update their own records").
+
+RESPONSE SCHEMA RULES:
+- For response_schema, ALWAYS prefer a structured dictionary like {"type": "array", "items": "EntityName"} or {"type": "object", "model": "EntityName"}.
+- If referencing a core entity type by name alone, you may use a string identifier like "User" or a dictionary like {"type": "User"}.
+
+CRITICAL RULES FOR JSON:
+- NEVER output null for arrays/lists. If a field like allowed_roles or validation_rules is empty, output an empty array [].
+- NEVER output null for objects/dicts. If a field like request_body is not needed, use JSON null (not the string "null").
 
 OUTPUT: A JSON array. No explanation text.
 [
@@ -158,6 +176,10 @@ MANDATORY TABLE: "users" must always be present with these columns minimum:
   password_hash (VARCHAR(255), NOT NULL), role (VARCHAR(50), NOT NULL),
   is_active (BOOLEAN, NOT NULL), created_at, updated_at
 
+CRITICAL RULES FOR JSON:
+- NEVER output null for arrays/lists. If a field like columns or indexes is empty, output an empty array [].
+- NEVER output null for objects/dicts.
+
 OUTPUT: A JSON array of table objects.
 [
   {
@@ -200,6 +222,10 @@ a base role (e.g. premium_user inherits_from basic_user).
 COVERAGE RULE: Every entity in the app must have at least one non-admin
 role with at minimum "entity:read" permission.
 
+CRITICAL RULES FOR JSON:
+- NEVER output null for arrays/lists. If a field like permissions is empty, output an empty array [].
+- NEVER output null for objects/dicts.
+
 OUTPUT: A JSON array of role objects.
 [
   {
@@ -236,6 +262,10 @@ ACTION FORMAT: System action verb.
 AFFECTED COMPONENTS: List UIComponent.id or UIPage.id values that
 enforce or display this rule. Empty list for pure backend rules.
 
+CRITICAL RULES FOR JSON:
+- NEVER output null for arrays/lists. If a field like affected_components is empty, output an empty array [].
+- NEVER output null for objects/dicts.
+
 OUTPUT: A JSON array. If the app is simple with no gating logic, return [].
 [
   {
@@ -257,7 +287,7 @@ class SchemaGenerator(PipelineStage):
     """
     Stage 3: Schema Generation.
 
-    Makes 5 separate Claude calls to generate:
+    Makes 5 separate Gemini calls to generate:
       - UI Schema (list[UIPage])
       - API Schema (list[APIEndpoint])
       - DB Schema (list[DBTable])
@@ -273,7 +303,7 @@ class SchemaGenerator(PipelineStage):
     def _build_context(self, intent: IntentModel, design: DesignModel) -> str:
         """
         Build a shared context string used in all sub-prompts.
-        Gives Claude full awareness of what we're building.
+        Gives Gemini full awareness of what we're building.
         """
         return (
             "APP SPECIFICATION:\n"
@@ -292,7 +322,7 @@ class SchemaGenerator(PipelineStage):
             f"Generate the complete UI schema for this app.\n\n{context}\n\n"
             "Create ALL pages needed. Use the role names and entity names from the spec."
         )
-        items, tokens, latency = self.call_claude_list(
+        items, tokens, latency = self.call_gemini_list(
             system_prompt=UI_SYSTEM_PROMPT,
             user_content=user_content,
             item_model=UIPage,
@@ -310,7 +340,7 @@ class SchemaGenerator(PipelineStage):
             f"Generate the complete REST API schema for this app.\n\n{context}\n\n"
             "Include CRUD endpoints for every entity AND auth endpoints."
         )
-        items, tokens, latency = self.call_claude_list(
+        items, tokens, latency = self.call_gemini_list(
             system_prompt=API_SYSTEM_PROMPT,
             user_content=user_content,
             item_model=APIEndpoint,
@@ -328,7 +358,7 @@ class SchemaGenerator(PipelineStage):
             f"Generate the complete database schema for this app.\n\n{context}\n\n"
             "Include a 'users' table. All entities from the design must have a table."
         )
-        items, tokens, latency = self.call_claude_list(
+        items, tokens, latency = self.call_gemini_list(
             system_prompt=DB_SYSTEM_PROMPT,
             user_content=user_content,
             item_model=DBTable,
@@ -347,7 +377,7 @@ class SchemaGenerator(PipelineStage):
             f"Roles needed: {intent.user_roles}. "
             "Every role must have specific permissions."
         )
-        items, tokens, latency = self.call_claude_list(
+        items, tokens, latency = self.call_gemini_list(
             system_prompt=AUTH_SYSTEM_PROMPT,
             user_content=user_content,
             item_model=AuthRole,
@@ -365,7 +395,7 @@ class SchemaGenerator(PipelineStage):
             f"Generate business rules for this app.\n\n{context}\n\n"
             "If this is a simple app with no gating logic, return an empty array []."
         )
-        items, tokens, latency = self.call_claude_list(
+        items, tokens, latency = self.call_gemini_list(
             system_prompt=BUSINESS_RULES_PROMPT,
             user_content=user_content,
             item_model=BusinessRule,

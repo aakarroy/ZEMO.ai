@@ -13,9 +13,11 @@ class IntentModel(BaseModel):
     app_name: str = Field(
         ...,
         description=(
-            "A short, clean name for the app. 2-4 words maximum. "
-            "Examples: 'CRM Platform', 'Task Manager', 'E-Commerce Store'. "
-            "Do NOT include words like 'App' or 'System' unless natural."
+            "The invented brand name for the app. Must be catchy and professional "
+            "(e.g., 'CartNova', 'NexusCRM', 'TaskFlow'). "
+            "NOT a generic description like 'Online Store' or 'Task Manager'. "
+            "1-2 words, portmanteau or compound preferred. "
+            "This name is used universally across all generated code."
         )
     )
 

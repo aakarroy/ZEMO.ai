@@ -4,10 +4,10 @@ stage1_intent.py
 Stage 1 of the pipeline: Intent Extraction.
 
 Takes a raw natural language app description and returns a structured
-IntentModel by calling Claude with a focused system prompt.
+IntentModel by calling Gemini with a focused system prompt.
 
 The system prompt includes the full IntentModel field descriptions
-so Claude knows exactly what each field expects.
+so Gemini knows exactly what each field expects.
 """
 
 from pipeline import PipelineStage
@@ -16,7 +16,7 @@ from models.intent_model import IntentModel
 
 # ─────────────────────────────────────────────────────────────────────
 # SYSTEM PROMPT
-# Embeds the IntentModel schema so Claude always knows the contract.
+# Embeds the IntentModel schema so Gemini always knows the contract.
 # Keep this prompt focused: intent extraction ONLY, no design decisions.
 # ─────────────────────────────────────────────────────────────────────
 
@@ -29,7 +29,7 @@ Do not generate API routes, database tables, or UI components.
 Those come in later stages.
 
 You must identify:
-1. What the app is called and what category it belongs to
+1. A catchy, professional BRAND NAME for the app (see branding rules below)
 2. What data entities (nouns) exist in the system
 3. What roles different types of users have
 4. What the key features are (be specific and complete)
@@ -37,10 +37,28 @@ You must identify:
 6. What reasonable assumptions you will make to fill gaps
 7. How complex this app is on a scale of 1-10
 
+BRANDING REQUIREMENT — THIS IS MANDATORY:
+You must invent a highly creative, professional, and catchy brand name for this
+project. The brand name should feel like a real SaaS product name — memorable,
+unique, and marketable.
+
+Good examples: "CartNova", "NexusCRM", "TaskFlow", "VaultHR", "LumiShop",
+"PulseDesk", "ForgeOps", "AuraBooks", "OrbitalPM", "SyncMed"
+Bad examples (DO NOT use): "Online Store", "Task Manager", "CRM App",
+"Invoice System", "My App", "Web App", "Management System"
+
+Rules:
+- 1-2 words maximum, ideally a portmanteau or compound word
+- Can be a real word with a tech suffix/prefix, or a completely coined word
+- Must NOT contain "App", "System", "Manager", or "Platform" as standalone words
+- Must feel like a real startup product name
+
+Set this invented brand name as the "app_name" field.
+
 OUTPUT SCHEMA — return a JSON object with EXACTLY these fields:
 
 {
-  "app_name": "Short clean name, 2-4 words, no 'App' or 'System' suffix unless natural",
+  "app_name": "YourBrandName (invented catchy brand, NOT a generic description)",
   "app_type": "Category: CRM | E-Commerce | Project Management | Healthcare | SaaS | Blog | Social Platform | LMS | Restaurant | Recruitment | Fitness | Other",
   "core_entities": ["PascalCase singular nouns that become database tables. Min 3, max 12."],
   "user_roles": ["lowercase_snake_case role names. Always include 'admin'. Min 2 roles."],
@@ -76,7 +94,7 @@ class IntentExtractor(PipelineStage):
     Stage 1: Intent Extraction.
 
     Converts a raw user prompt into a structured IntentModel.
-    Uses a single Claude call with low temperature for consistency.
+    Uses a single Gemini call with low temperature for consistency.
     """
 
     stage_name = "intent_extraction"
@@ -92,7 +110,7 @@ class IntentExtractor(PipelineStage):
             tuple of (IntentModel, tokens_used, latency_ms)
 
         Raises:
-            StageValidationError: If Claude's response cannot be validated.
+            StageValidationError: If Gemini's response cannot be validated.
         """
         print(f"\n[Stage 1] Extracting intent from prompt ({len(prompt)} chars)...")
 
@@ -102,7 +120,7 @@ class IntentExtractor(PipelineStage):
             "Remember: Output ONLY the JSON object. No preamble."
         )
 
-        result, tokens, latency = self.call_claude(
+        result, tokens, latency = self.call_gemini(
             system_prompt=INTENT_SYSTEM_PROMPT,
             user_content=user_content,
             response_model=IntentModel,

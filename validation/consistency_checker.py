@@ -107,7 +107,7 @@ class ConsistencyChecker:
         # Build set of all column names across all tables
         all_db_columns: set[str] = set()
         for table in app_schema.db_schema:
-            for col in table.columns:
+            for col in (table.columns or []):
                 all_db_columns.add(col.name)
 
         # Check each write endpoint
@@ -163,7 +163,7 @@ class ConsistencyChecker:
         api_paths: set[str] = {ep.path for ep in app_schema.api_schema}
 
         for page in app_schema.ui_schema:
-            for component in page.components:
+            for component in (page.components or []):
                 if not component.data_source:
                     continue
                 if not component.data_source.startswith("api:"):
@@ -225,7 +225,7 @@ class ConsistencyChecker:
 
         # Check UI pages
         for page in app_schema.ui_schema:
-            for role in page.access_roles:
+            for role in (page.access_roles or []):
                 if role not in defined_roles:
                     errors.append(ConsistencyError(
                         check_type="ui_uses_undefined_role",
@@ -247,7 +247,7 @@ class ConsistencyChecker:
 
         # Check API endpoints
         for endpoint in app_schema.api_schema:
-            for role in endpoint.allowed_roles:
+            for role in (endpoint.allowed_roles or []):
                 if role not in defined_roles:
                     errors.append(ConsistencyError(
                         check_type="api_uses_undefined_role",
